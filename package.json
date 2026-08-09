@@ -1,0 +1,26 @@
+{
+  "name": "frida-scripts",
+  "version": "0.1.0",
+  "description": "Frida tooling for mobile application security research: enumerate the runtime, score the attack surface, then instrument what matters.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:flutter-enum",
+    "build:flutter-enum": "frida-compile agent/entries/flutter-enum.ts -o dist/flutter-enum.js -c",
+    "watch:flutter-enum": "frida-compile agent/entries/flutter-enum.ts -o dist/flutter-enum.js -w",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint agent",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "test": "node tests/run.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/frida-gum": "^19.10.0",
+    "eslint": "^9.17.0",
+    "frida-compile": "^19.0.5",
+    "frida-java-bridge": "^7.0.13",
+    "frida-objc-bridge": "^8.0.6",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0"
+  }
+}

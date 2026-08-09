@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+
+# Run artifacts produced by the agent (structured output, captured on the host).
+runs/
+*.ndjson

@@ -1,0 +1,248 @@
+{
+  "name": "default",
+  "description": "Attack-surface scoring for mobile platform-channel and method names. Weights are additive; a name matching several tags scores the sum.",
+  "ignore": [
+    "webview_flutter",
+    "firebase_core",
+    "firebase_analytics",
+    "google_mobile_ads",
+    "image_picker",
+    "path_provider",
+    "shared_preferences_android",
+    "url_launcher",
+    "package_info_plus",
+    "connectivity_plus",
+    "device_info_plus",
+    "flutter/lifecycle",
+    "flutter/system",
+    "flutter/textinput",
+    "flutter/platform",
+    "flutter/navigation",
+    "flutter/keyevent",
+    "flutter/accessibility",
+    "flutter/restoration",
+    "flutter/mousecursor",
+    "flutter/settings",
+    "flutter/skia",
+    "flutter/spellcheck"
+  ],
+  "tags": [
+    {
+      "tag": "rasp-vendor",
+      "weight": 5,
+      "note": "Named commercial RASP or hardening product. Highest-signal match.",
+      "keywords": [
+        "dexguard",
+        "promon",
+        "shield",
+        "appdome",
+        "guardsquare",
+        "talsec",
+        "freerasp",
+        "verimatrix",
+        "zimperium",
+        "appsealing",
+        "inauth",
+        "arxan",
+        "digital.ai",
+        "jscrambler",
+        "buildfire"
+      ]
+    },
+    {
+      "tag": "root-detect",
+      "weight": 4,
+      "note": "Device-integrity and tamper checks; the usual first blocker on an engagement.",
+      "keywords": [
+        "jailbreak",
+        "jailbroken",
+        "rooted",
+        "root_check",
+        "rootcheck",
+        "rootbeer",
+        "magisk",
+        "xposed",
+        "supersu",
+        "busybox",
+        "tamper",
+        "integrity",
+        "safetynet",
+        "playintegrity",
+        "attestation",
+        "emulator",
+        "simulator",
+        "debugger",
+        "antidebug",
+        "frida",
+        "substrate",
+        "cydia",
+        "hooking",
+        "rasp"
+      ]
+    },
+    {
+      "tag": "pinning",
+      "weight": 4,
+      "note": "Certificate validation and pinning surfaces.",
+      "keywords": [
+        "pinning",
+        "certpin",
+        "sslpin",
+        "trustmanager",
+        "trust_manager",
+        "x509",
+        "certificate",
+        "truststore",
+        "ssl",
+        "tls",
+        "mitm"
+      ]
+    },
+    {
+      "tag": "crypto",
+      "weight": 3,
+      "note": "Key material and cryptographic operations.",
+      "keywords": [
+        "crypto",
+        "cipher",
+        "encrypt",
+        "decrypt",
+        "keystore",
+        "keychain",
+        "secretkey",
+        "privatekey",
+        "signing",
+        "signature",
+        "hmac",
+        "aes",
+        "rsa",
+        "seed",
+        "mnemonic",
+        "entropy"
+      ]
+    },
+    {
+      "tag": "auth",
+      "weight": 3,
+      "note": "Authentication, session, and biometric gates.",
+      "keywords": [
+        "auth",
+        "login",
+        "logout",
+        "session",
+        "token",
+        "refresh_token",
+        "bearer",
+        "oauth",
+        "credential",
+        "password",
+        "passcode",
+        "pincode",
+        "biometric",
+        "fingerprint",
+        "faceid",
+        "touchid",
+        "localauth",
+        "mfa",
+        "otp",
+        "2fa"
+      ]
+    },
+    {
+      "tag": "storage",
+      "weight": 2,
+      "note": "Local persistence where secrets tend to land.",
+      "keywords": [
+        "secure_storage",
+        "securestorage",
+        "sharedpreferences",
+        "userdefaults",
+        "sqlite",
+        "database",
+        "realm",
+        "hive",
+        "cache",
+        "vault",
+        "wallet"
+      ]
+    },
+    {
+      "tag": "network",
+      "weight": 2,
+      "note": "Transport configuration and proxy or VPN awareness.",
+      "keywords": [
+        "proxy",
+        "vpn",
+        "http",
+        "socket",
+        "websocket",
+        "grpc",
+        "api_client",
+        "interceptor",
+        "dns"
+      ]
+    },
+    {
+      "tag": "payment",
+      "weight": 3,
+      "note": "Payment and card handling, high-value in fintech targets.",
+      "keywords": [
+        "payment",
+        "card",
+        "pan",
+        "cvv",
+        "emv",
+        "nfc",
+        "hce",
+        "transaction",
+        "transfer",
+        "billing",
+        "purchase"
+      ]
+    },
+    {
+      "tag": "security-generic",
+      "weight": 2,
+      "note": "Generic security naming. Deliberately low-weight: it catches in-house channels like `app/security_check` that no specific tag would, at the cost of some noise.",
+      "keywords": [
+        "security",
+        "secure",
+        "protection",
+        "protect",
+        "threat",
+        "harden",
+        "obfusc",
+        "antifraud",
+        "anti_fraud",
+        "fraud",
+        "risk"
+      ]
+    },
+    {
+      "tag": "native-bridge",
+      "weight": 1,
+      "note": "Custom bridges are worth reading regardless of naming.",
+      "keywords": ["native", "bridge", "platform_channel", "jni", "ffi", "plugin"]
+    },
+    {
+      "tag": "pii",
+      "weight": 2,
+      "note": "Direct handling of personal data.",
+      "keywords": [
+        "location",
+        "gps",
+        "contacts",
+        "camera",
+        "microphone",
+        "clipboard",
+        "screenshot",
+        "screen_capture",
+        "biometrics",
+        "identity",
+        "kyc",
+        "passport",
+        "ssn"
+      ]
+    }
+  ]
+}
