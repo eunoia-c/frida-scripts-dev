@@ -22,5 +22,8 @@
     "frida-objc-bridge": "^8.0.6",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
