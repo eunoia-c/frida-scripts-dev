@@ -17,7 +17,7 @@ frida -U -f com.target.app -l triage_recon.js //change the app and the runtime s
 [+] Detected Engine : Flutter
 [+] Key Modules     : libapp.so (Dart AOT Payload)
 [*] --- Starting Secret & Network Listeners --- (Live Crypto Keys, URLs, and Stored Prefs)
-[+] [STORAGE] Pref Saved -> Key: |T|812270506136|* | Value: {"token":"cdrLga2QVv6qMJsBnzAcXvafbLd:APA91s1_bH8qzWXPtd5aSsndMVFQA7qskyyAanwdJDASfWtsseQAS75TOqlWTFGtfr7Aq0YZbzHu6b6wuyIEBIYB_9Jw-9lzgJE7Q_aJy3Xe7vQuEuAAOE0Lr7bNHceOfwSQ","appVersion":"11","timestamp":1782131146969}
+[+] [STORAGE] Pref Saved -> Key: |T|812270506136|* | Value: {"token":"cdrLga2QVv6qMJsBnzAcXvafbLd:APA91s1_bH8qzWXPtd5aQA7qskyyAanwdJDASfWtsseQAS75TOqlWTFGtfr7Aq0YZbzHu6b6wuB_9Jw-9lzgJE7Q_aJy3Xe7vQuEuAAOE0Lr7bNHceOfwSQ","appVersion":"11","timestamp":1782131146969}
 [+] [STORAGE] Pref Saved -> Key: flutter.status | Value: 0
 ```
 
