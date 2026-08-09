@@ -92,7 +92,35 @@ Supersedes `flutter/{and,ios}-flr-class-enum.js`. Beyond what those do today:
   with weights and tags (crypto / auth / storage / root-detect / RASP-vendor /
   network), consumed by both platforms.
 
-### M3 — Engine fingerprint and Dart snapshot
+### M3 — Engine fingerprint and Dart snapshot ✅ built
+
+Delivered in `agent/enumerate/flutter/dart.ts`. What landed against the plan:
+
+- SDK version, channel, and architecture parsed from the engine's embedded
+  version literal, handling both the modern `Dart SDK version:` and legacy
+  `Dart VM version:` forms.
+- Build mode inferred from AOT-snapshot presence and VM-service strings, with
+  the supporting evidence recorded alongside the verdict rather than presented
+  as fact.
+- Snapshot sections located with addresses and, where the symbol table survives,
+  sizes — falling back to dynamic exports on stripped builds.
+- Dart library and package inventory recovered by scanning the snapshot data
+  section for validated library URIs.
+
+Two deviations from the original plan, both deliberate:
+
+- **VM-service reachability is inferred, not probed.** Connecting to the service
+  protocol from inside the agent would mean speaking WebSocket over a port the
+  agent would have to discover. The build-mode verdict already tells you when a
+  VM service should exist; actually talking to it belongs with the host-side CLI
+  in M4, which has a real network stack.
+- **Kernel-blob detection is not implemented.** It means reading the APK or IPA
+  asset bundle, which is a host-side concern. The field exists in the inference
+  input and is passed as `false` rather than guessed at.
+
+Original plan follows.
+
+### M3 — Engine fingerprint and Dart snapshot (plan)
 
 This is the "read the application's functions" layer.
 

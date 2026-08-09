@@ -18,6 +18,8 @@ export type RecordType =
   | "target"
   | "module"
   | "engine"
+  | "dart"
+  | "dart.library"
   | "plugin"
   | "channel"
   | "call"
@@ -53,15 +55,39 @@ export interface ModuleRecord extends BaseRecord {
 
 export interface EngineRecord extends BaseRecord {
   type: "engine";
-  /** "flutter", or a best-effort guess when Flutter is absent. */
+  /** Detected engine name, or "Native" when no managed runtime is present. */
   engine: string;
-  /** Dart SDK version string recovered from the engine binary, when found. */
-  dartSdk: string | null;
-  /** Engine commit hash, when it can be parsed out of the version string. */
-  engineHash: string | null;
-  /** True when the Dart VM service is reachable — a debug or profile build. */
-  vmServiceReachable: boolean | null;
-  snapshotSymbols: string[];
+  /** Whether a Dart AOT payload (libapp.so) is loaded. */
+  hasDartPayload: boolean;
+}
+
+/** One snapshot section located in the Dart payload. */
+export interface SnapshotSection {
+  name: string;
+  address: string;
+  /** Byte length, when the symbol table carries it; null on stripped builds. */
+  size: number | null;
+}
+
+export interface DartRecord extends BaseRecord {
+  type: "dart";
+  sdk: string | null;
+  channel: string | null;
+  arch: string | null;
+  versionRaw: string | null;
+  /** Inferred, not read from a flag — see buildModeEvidence. */
+  buildMode: string;
+  buildModeEvidence: string[];
+  snapshot: SnapshotSection[];
+  libraryCount: number;
+  /** Distinct Dart package names recovered from the snapshot. */
+  packages: string[];
+}
+
+export interface DartLibraryRecord extends BaseRecord {
+  type: "dart.library";
+  uri: string;
+  package: string | null;
 }
 
 export interface PluginRecord extends BaseRecord {
@@ -120,6 +146,8 @@ export type AgentRecord =
   | TargetRecord
   | ModuleRecord
   | EngineRecord
+  | DartRecord
+  | DartLibraryRecord
   | PluginRecord
   | ChannelRecord
   | CallRecord

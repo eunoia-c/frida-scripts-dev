@@ -24,6 +24,13 @@ export interface Config {
   maxDedupeKeys: number;
   /** Minimum score for a channel to be treated as interesting. */
   scoreThreshold: number;
+  /**
+   * Scan the Dart payload for library URIs.
+   *
+   * Worth disabling on very large payloads, or when only channels matter: the
+   * scan walks the snapshot data section and costs time proportional to it.
+   */
+  dartLibraryScan: boolean;
 }
 
 const config: Config = {
@@ -35,6 +42,7 @@ const config: Config = {
   maxValueLength: 512,
   maxDedupeKeys: 8192,
   scoreThreshold: 1,
+  dartLibraryScan: true,
 };
 
 export function getConfig(): Config {

@@ -6,6 +6,7 @@ import { log } from "../core/log.js";
 import { safe } from "../core/safe.js";
 import type { RunEndRecord, RunStartRecord } from "../core/types.js";
 import { enumerateAndroid } from "../enumerate/flutter/android.js";
+import { enumerateDart } from "../enumerate/flutter/dart.js";
 import { enumerateIOS } from "../enumerate/flutter/ios.js";
 import { detectPlatform, reportEngine, reportIdentity, reportModules } from "../enumerate/target.js";
 import { profileName } from "../score/index.js";
@@ -31,14 +32,22 @@ function run(): void {
   reportIdentity(platform);
 
   const modules = reportModules();
-  reportEngine(modules);
+  const engine = reportEngine(modules);
 
+  // Order matters. Installing the channel hooks is nearly free, while the Dart
+  // scan walks megabytes of snapshot data and takes real time. On a spawned
+  // process every channel registered during that scan would be missed, so the
+  // hooks go in first and the expensive passive work runs behind them.
   if (platform === "android") {
     enumerateAndroid();
   } else if (platform === "ios") {
     enumerateIOS();
   } else {
     log.fail("Unsupported runtime — no Java or Objective-C bridge available.");
+  }
+
+  if (engine === "Flutter") {
+    enumerateDart(modules);
   }
 }
 

@@ -29,7 +29,8 @@ crosses them; an app you never navigate reports almost nothing.
 | | |
 | --- | --- |
 | Identity | package/bundle ID, version name, version code |
-| Engine | detected engine, Dart SDK version and engine hash, snapshot symbols |
+| Engine | which runtime is in play, and whether a Dart payload is loaded |
+| Dart | SDK version and channel, **build mode** with evidence, snapshot section bounds, recovered library and package inventory |
 | Plugins | registered Flutter plugins — the app's third-party dependency list |
 | Channels | every `MethodChannel` / `EventChannel` / `BasicMessageChannel`, scored |
 | Calls | method names, arguments, and **return values** crossing those channels |
@@ -43,9 +44,17 @@ Sample output, trimmed:
 
 [*] --- Engine Fingerprint ---
 [+] Engine        : Flutter
-[+] Dart SDK      : Dart SDK version: 3.5.0 (stable) on "android_arm64"
 [+] Dart payload  : libapp.so
-    snapshot symbols: _kDartIsolateSnapshotData, _kDartIsolateSnapshotInstructions
+
+[*] --- Dart Runtime ---
+[+] Dart SDK      : 3.5.0
+    channel: stable · android_arm64
+[+] Build mode    : release
+    evidence: AOT snapshot present
+[+] Snapshot      : 4 section(s)
+    _kDartIsolateSnapshotData @ 0x7f2c108000 (1441792 bytes)
+[+] Dart packages : 31
+    dio, firebase_core, flutter, flutter_secure_storage, local_auth, provider, …
 
 [*] --- Flutter Plugins ---
 [+] [plugin] io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin
@@ -227,15 +236,42 @@ const model = await script.exports.model();
 Every record carries `{ v, t, type, … }` — see [`agent/core/types.ts`](agent/core/types.ts)
 for the schema.
 
+## Reading the Dart section
+
+**Build mode is the first thing to look at.** A `release` build is the normal
+case. Anything else — `profile` or `debug` — is a finding on its own: those
+builds carry the Dart VM service, which hands out a complete class and function
+listing with no snapshot parsing involved. The verdict always prints the
+evidence behind it, because it is inferred from what is loaded rather than read
+from a flag.
+
+**Snapshot sections** are recorded with addresses and, where the symbol table
+survived, sizes. This is the input a host-side snapshot parser needs.
+
+**Packages and libraries** are recovered by scanning the snapshot data for
+library URIs. This works without understanding the snapshot format, and gives
+you the app's Dart dependency list plus the URIs of its own code — usually the
+fastest way to separate app logic from framework noise.
+
+> **What this deliberately does not do:** parse Dart AOT snapshots to enumerate
+> classes and functions. That format is version-specific and shifts between SDK
+> releases, and a Frida agent is the wrong place to track it. The agent records
+> the SDK version, build mode, and section bounds a host-side parser needs
+> ([blutter](https://github.com/worawit/blutter) and similar), and recovers what
+> is readable as plain strings. A full dump is a host-side step — see M3/M4 in
+> the [roadmap](docs/ROADMAP.md).
+
+If the scan is slow on a very large payload, turn it off:
+`script.exports.configure({ dartLibraryScan: false })`.
+
 ## Status
 
-Built: the core and the Flutter enumerator (M1 + M2 in
-[docs/ROADMAP.md](docs/ROADMAP.md)).
+Built: the core, the Flutter channel enumerator, and the Dart runtime
+enumerator (M1–M3 in [docs/ROADMAP.md](docs/ROADMAP.md)).
 
-Next: Dart snapshot and VM-service work (M3), a host-side query and report CLI
-(M4), and attack modules driven by the enumeration — pinning bypass keyed to the
-detected engine version, and root-detection bypasses generated from the scored
-channel list (M5).
+Next: a host-side query and report CLI (M4), and attack modules driven by the
+enumeration — pinning bypass keyed to the detected engine version, and
+root-detection bypasses generated from the scored channel list (M5).
 
 The legacy standalone scripts (`and-runtime-triage.js`, `ios-runtime-triage.js`,
 `flutter/`) still work and are unchanged. They will be folded into the agent as

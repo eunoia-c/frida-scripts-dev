@@ -28,6 +28,7 @@ execFileSync(
     "agent/score/index.ts",
     "agent/core/config.ts",
     "agent/core/dedupe.ts",
+    "agent/enumerate/flutter/dart.ts",
     "--outDir", out,
     "--module", "ES2022",
     "--target", "ES2022",
@@ -55,6 +56,9 @@ copyFileSync(join(root, "profiles/default.json"), join(out, "profiles/default.js
 const { score, isInteresting } = await import(pathToFileURL(scorePath).href);
 const { Seen, clamp } = await import(pathToFileURL(join(out, "agent/core/dedupe.js")).href);
 const { configure } = await import(pathToFileURL(join(out, "agent/core/config.js")).href);
+const { parseDartVersion, isDartLibraryUri, packageOf, inferBuildMode } = await import(
+  pathToFileURL(join(out, "agent/enumerate/flutter/dart.js")).href
+);
 
 let failures = 0;
 function check(name, condition, detail = "") {
@@ -118,6 +122,86 @@ check("truncates and marks elision", clamp("a".repeat(50)) === "a".repeat(10) + 
 check("passes null through", clamp(null) === null);
 check("leaves short values alone", clamp("short") === "short");
 configure({ maxValueLength: 512 });
+
+console.log("\ndart — version parsing");
+{
+  const modern = parseDartVersion(
+    'Dart SDK version: 3.5.0 (stable) (Tue Aug 6 12:00:00 2024 +0000) on "android_arm64"',
+  );
+  check("parses SDK version", modern.sdk === "3.5.0", modern.sdk);
+  check("parses channel", modern.channel === "stable", modern.channel);
+  check("parses arch", modern.arch === "android_arm64", modern.arch);
+
+  const legacy = parseDartVersion(
+    'Dart VM version: 2.19.6 (stable) (Unknown timestamp) on "ios_arm64"',
+  );
+  check("handles legacy 'Dart VM version' form", legacy.sdk === "2.19.6", legacy.sdk);
+  check("parses ios arch", legacy.arch === "ios_arm64", legacy.arch);
+
+  const prerelease = parseDartVersion('Dart SDK version: 3.6.0-165.0.dev (dev) on "android_arm64"');
+  check("handles prerelease versions", prerelease.sdk === "3.6.0-165.0.dev", prerelease.sdk);
+
+  const trailing = parseDartVersion(
+    'Dart SDK version: 3.5.0 (stable) on "android_arm64"\nsome other embedded string',
+  );
+  check("stops at the first line", !trailing.raw.includes("some other"), trailing.raw);
+
+  const junk = parseDartVersion("not a version string at all");
+  check("returns null on junk rather than throwing", junk.sdk === null);
+}
+
+console.log("\ndart — library URI validation");
+{
+  const valid = [
+    "package:flutter/src/widgets/framework.dart",
+    "package:my_app/main.dart",
+    "package:dio/dio.dart",
+    "package:flutter",
+    "dart:core",
+    "dart:async",
+    "dart:_internal",
+  ];
+  for (const uri of valid) {
+    check("accepts " + uri, isDartLibraryUri(uri));
+  }
+
+  const invalid = [
+    "package:",
+    "package:Flutter/Bad.dart",
+    "not a uri",
+    "package:app/main.txt",
+    "package:app/" + "x".repeat(300) + ".dart",
+    "",
+  ];
+  for (const uri of invalid) {
+    check("rejects " + JSON.stringify(uri.slice(0, 30)), !isDartLibraryUri(uri));
+  }
+
+  check("extracts package name", packageOf("package:dio/src/dio.dart") === "dio");
+  check("extracts bare package name", packageOf("package:flutter") === "flutter");
+  check("returns null for dart: URIs", packageOf("dart:core") === null);
+}
+
+console.log("\ndart — build mode inference");
+{
+  const release = inferBuildMode({ aotSnapshot: true, vmServiceStrings: false, kernelBlob: false });
+  check("AOT without VM service is release", release.mode === "release");
+
+  const profile = inferBuildMode({ aotSnapshot: true, vmServiceStrings: true, kernelBlob: false });
+  check("AOT with VM service is profile", profile.mode === "profile");
+
+  const debug = inferBuildMode({ aotSnapshot: false, vmServiceStrings: true, kernelBlob: true });
+  check("kernel blob without AOT is debug", debug.mode === "debug");
+
+  const unknown = inferBuildMode({
+    aotSnapshot: false,
+    vmServiceStrings: false,
+    kernelBlob: false,
+  });
+  check("no signals is unknown, not a guess", unknown.mode === "unknown");
+  check("unknown carries no evidence", unknown.evidence.length === 0);
+  check("verdicts carry their evidence", profile.evidence.length === 2, profile.evidence.join("; "));
+}
 
 console.log(failures === 0 ? "\nall checks passed\n" : "\n" + failures + " check(s) failed\n");
 process.exit(failures === 0 ? 0 : 1);

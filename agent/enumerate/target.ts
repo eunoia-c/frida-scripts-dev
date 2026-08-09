@@ -5,6 +5,7 @@ import { emit } from "../core/emit.js";
 import { log, pad } from "../core/log.js";
 import { safe } from "../core/safe.js";
 import type { EngineRecord, ModuleRecord, Platform, TargetRecord } from "../core/types.js";
+import { findDartPayload } from "./modules.js";
 
 export function detectPlatform(): Platform {
   if (Java.available) {
@@ -143,88 +144,17 @@ export function reportModules(): Module[] {
   return modules;
 }
 
-/** Locate the Flutter engine binary across both platforms' naming. */
-export function findFlutterEngine(modules: Module[]): Module | null {
-  return (
-    modules.find((m) => {
-      const lower = m.name.toLowerCase();
-      return lower === "libflutter.so" || lower === "flutter";
-    }) ?? null
-  );
-}
-
-/**
- * Recover the Dart SDK version string embedded in the engine binary.
- *
- * The engine ships a literal like:
- *   "Dart SDK version: 3.5.0 (stable) (Tue Aug 6 ...) on android_arm64"
- * Scanning for the prefix is cheap and gives the SDK version and, on most
- * builds, the engine revision — which is what M3 will key snapshot parsing and
- * BoringSSL offsets from.
- */
-function scanDartVersion(engine: Module): { dartSdk: string | null; engineHash: string | null } {
-  const pattern = "44 61 72 74 20 53 44 4b 20 76 65 72 73 69 6f 6e 3a 20"; // "Dart SDK version: "
-
-  const matches = safe("engine/dart-version-scan", () =>
-    Memory.scanSync(engine.base, engine.size, pattern),
-  );
-
-  if (matches === undefined || matches.length === 0) {
-    return { dartSdk: null, engineHash: null };
-  }
-
-  const raw = safe("engine/dart-version-read", () => {
-    const first = matches[0];
-    return first ? first.address.readUtf8String(256) : null;
-  });
-
-  if (!raw) {
-    return { dartSdk: null, engineHash: null };
-  }
-
-  const line = raw.split("\n")[0]?.trim() ?? null;
-  const hash = line ? (/\b([0-9a-f]{40})\b/.exec(line)?.[1] ?? null) : null;
-
-  return { dartSdk: line, engineHash: hash };
-}
-
-/** Snapshot symbols the M3 Dart work will need; presence alone is useful now. */
-const SNAPSHOT_SYMBOLS = [
-  "_kDartVmSnapshotData",
-  "_kDartVmSnapshotInstructions",
-  "_kDartIsolateSnapshotData",
-  "_kDartIsolateSnapshotInstructions",
-];
-
-function findSnapshotSymbols(modules: Module[]): string[] {
-  const appModule = modules.find((m) => m.name.toLowerCase() === "libapp.so");
-  if (!appModule) {
-    return [];
-  }
-
-  const found = safe("engine/snapshot-symbols", () => {
-    const names: string[] = [];
-    for (const symbol of SNAPSHOT_SYMBOLS) {
-      // Frida 17 removed the static Module.findExportByName(module, name) form;
-      // resolution now goes through the module instance.
-      if (appModule.findExportByName(symbol) !== null) {
-        names.push(symbol);
-      }
-    }
-    return names;
-  });
-
-  return found ?? [];
-}
-
 /**
  * Fingerprint the runtime engine.
  *
  * Detection is scored rather than assigned by the last matching module, which
  * is how the previous scripts got it wrong: they used an if/else chain per
  * module in a loop, so whichever engine module happened to enumerate last won.
+ *
+ * Dart specifics (version, build mode, snapshot bounds) belong to the Dart
+ * enumerator; this reports only which engine is in play.
  */
-export function reportEngine(modules: Module[]): void {
+export function reportEngine(modules: Module[]): string {
   log.section("Engine Fingerprint");
 
   const names = modules.map((m) => m.name.toLowerCase());
@@ -245,33 +175,19 @@ export function reportEngine(modules: Module[]): void {
     engine = "Cordova";
   }
 
-  const engineModule = findFlutterEngine(modules);
-  const version = engineModule ? scanDartVersion(engineModule) : { dartSdk: null, engineHash: null };
-  const snapshotSymbols = findSnapshotSymbols(modules);
+  // Resolved through the shared finder so iOS's `App.framework/App` counts too.
+  const payload = findDartPayload(modules);
 
-  emit<EngineRecord>("engine", {
-    engine,
-    dartSdk: version.dartSdk,
-    engineHash: version.engineHash,
-    // Reachability of the Dart VM service is an M3 concern; recording the field
-    // as unknown keeps the schema stable rather than asserting something false.
-    vmServiceReachable: null,
-    snapshotSymbols,
-  });
+  emit<EngineRecord>("engine", { engine, hasDartPayload: payload !== null });
 
   log.info(pad("Engine", 14) + ": " + engine);
-
-  if (version.dartSdk) {
-    log.info(pad("Dart SDK", 14) + ": " + version.dartSdk);
-  }
-  if (has("libapp.so")) {
-    log.note(pad("Dart payload", 14) + ": libapp.so");
-  }
-  if (snapshotSymbols.length > 0) {
-    log.detail("snapshot symbols: " + snapshotSymbols.join(", "));
+  if (payload !== null) {
+    log.note(pad("Dart payload", 14) + ": " + payload.name);
   }
 
   if (engine !== "Flutter") {
     log.warn("No Flutter engine found — channel enumeration will likely find nothing.");
   }
+
+  return engine;
 }
