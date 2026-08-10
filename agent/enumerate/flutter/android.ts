@@ -1,10 +1,10 @@
 import Java from "frida-java-bridge";
 
-import { clamp, Seen } from "../../core/dedupe.js";
 import { getConfig } from "../../core/config.js";
+import { clamp, Seen } from "../../core/dedupe.js";
 import { emit } from "../../core/emit.js";
 import { log } from "../../core/log.js";
-import { guard, safe } from "../../core/safe.js";
+import { observe, optionalClass, safe } from "../../core/safe.js";
 import type {
   CallRecord,
   ChannelKind,
@@ -24,6 +24,10 @@ const handlerToChannel = new Map<string, string>();
 
 /** Result object identity -> the call it belongs to, so async results attribute correctly. */
 const pendingResults = new Map<string, { channel: string; method: string }>();
+
+function use(className: string): any {
+  return Java.use(className);
+}
 
 function recordChannel(name: string, kind: ChannelKind, via: string): void {
   if (!name || !seenChannels.first(kind + ":" + name)) {
@@ -51,21 +55,21 @@ function recordChannel(name: string, kind: ChannelKind, via: string): void {
  * enumerator keeps working when a version adds another.
  */
 function hookChannelConstructors(className: string, kind: ChannelKind): void {
-  safe("flutter/android/ctor/" + kind, () => {
-    const Channel: any = Java.use(className);
+  const Channel = optionalClass(use, className);
+  if (Channel === null) {
+    log.detail(className + " not present on this engine version");
+    return;
+  }
 
+  safe("flutter/android/ctor/" + kind, () => {
     Channel.$init.overloads.forEach((overload: any) => {
-      overload.implementation = guard("flutter/android/ctor-impl/" + kind, function (
-        this: any,
-        ...args: any[]
-      ) {
+      observe("flutter/android/ctor/" + kind, overload, (_self, args) => {
         // The channel name is the first String argument; its position moves
         // between overloads, so find it by type rather than by index.
         const name = args.find((a) => typeof a === "string");
         if (typeof name === "string") {
           recordChannel(name, kind, "registration");
         }
-        return overload.apply(this, args);
       });
     });
   });
@@ -80,22 +84,48 @@ function hookChannelConstructors(className: string, kind: ChannelKind): void {
  * the hook is installed when setMethodCallHandler hands us an instance.
  */
 function hookMethodCallHandlers(): void {
-  safe("flutter/android/set-handler", () => {
-    const MethodChannel: any = Java.use("io.flutter.plugin.common.MethodChannel");
+  const MethodChannel = optionalClass(use, "io.flutter.plugin.common.MethodChannel");
+  if (MethodChannel === null) {
+    return;
+  }
 
-    MethodChannel.setMethodCallHandler.implementation = guard(
-      "flutter/android/set-handler-impl",
-      function (this: any, handler: any) {
-        if (handler !== null) {
-          const channelName = safe("flutter/android/channel-name", () => String(this.name.value));
-          if (channelName) {
-            instrumentHandler(handler.$className, channelName);
-          }
+  safe("flutter/android/set-handler", () => {
+    MethodChannel.setMethodCallHandler.overloads.forEach((overload: any) => {
+      observe("flutter/android/set-handler", overload, (self, args) => {
+        const handler = args[0];
+        if (handler === null || handler === undefined) {
+          return;
         }
-        return this.setMethodCallHandler(handler);
-      },
-    );
+        const channelName = readChannelName(self);
+        if (channelName !== null) {
+          instrumentHandler(handler.$className, channelName);
+        }
+      });
+    });
   });
+}
+
+/**
+ * Read a MethodChannel's own name.
+ *
+ * The field is private and its name has not been stable across embedder
+ * versions, so a missing field is expected rather than exceptional.
+ */
+function readChannelName(channel: any): string | null {
+  if (channel === null || channel === undefined) {
+    return null;
+  }
+  for (const field of ["name", "channel"]) {
+    try {
+      const value = channel[field];
+      if (value !== undefined && value.value !== undefined && value.value !== null) {
+        return String(value.value);
+      }
+    } catch {
+      // Field absent on this version; try the next candidate.
+    }
+  }
+  return null;
 }
 
 function instrumentHandler(handlerClass: string, channelName: string): void {
@@ -105,50 +135,57 @@ function instrumentHandler(handlerClass: string, channelName: string): void {
     return;
   }
 
-  safe("flutter/android/handler/" + handlerClass, () => {
-    const Handler: any = Java.use(handlerClass);
-    if (Handler.onMethodCall === undefined) {
-      return;
-    }
+  const Handler = optionalClass(use, handlerClass);
+  if (Handler === null || Handler.onMethodCall === undefined) {
+    return;
+  }
 
+  safe("flutter/android/handler/" + handlerClass, () => {
     Handler.onMethodCall.overloads.forEach((overload: any) => {
-      overload.implementation = guard("flutter/android/on-method-call", function (
-        this: any,
-        call: any,
-        result: any,
-      ) {
+      observe("flutter/android/on-method-call", overload, (self, args) => {
+        const call = args[0];
+        const result = args[1];
+
         // A handler class can serve more than one channel; prefer the mapping
         // recorded for this concrete class, falling back to the registration.
-        const channel = handlerToChannel.get(this.$className) ?? channelName;
-        const method = call !== null ? String(call.method.value) : "<null>";
+        const channel =
+          (self !== null && self !== undefined
+            ? handlerToChannel.get(self.$className)
+            : undefined) ?? channelName;
 
-        const args = safe("flutter/android/call-args", () =>
-          call !== null && call.arguments !== undefined && call.arguments.value !== null
-            ? String(call.arguments.value)
-            : null,
-        );
+        const method =
+          call !== null && call !== undefined && call.method !== undefined
+            ? String(call.method.value)
+            : "<unknown>";
+
+        let rawArgs: string | null = null;
+        try {
+          if (call !== null && call.arguments !== undefined && call.arguments.value !== null) {
+            rawArgs = String(call.arguments.value);
+          }
+        } catch {
+          rawArgs = null;
+        }
 
         const s = score(channel + "/" + method);
         emit<CallRecord>("call", {
           channel,
           method,
-          args: clamp(args ?? null),
+          args: clamp(rawArgs),
           score: s.score,
           tags: s.tags,
         });
 
-        const line = channel + " → " + method + "(" + (clamp(args ?? null) ?? "") + ")";
+        const line = channel + " → " + method + "(" + (clamp(rawArgs) ?? "") + ")";
         if (isInteresting(s)) {
           log.hit(line);
         } else if (getConfig().verbose) {
           log.note(line);
         }
 
-        if (result !== null) {
+        if (result !== null && result !== undefined) {
           trackResult(result, channel, method);
         }
-
-        return overload.call(this, call, result);
       });
     });
   });
@@ -173,40 +210,44 @@ function trackResult(result: any, channel: string, method: string): void {
     return;
   }
 
-  safe("flutter/android/result/" + resultClass, () => {
-    const Result: any = Java.use(resultClass);
+  const Result = optionalClass(use, resultClass);
+  if (Result === null) {
+    return;
+  }
 
+  safe("flutter/android/result/" + resultClass, () => {
     const attach = (methodName: string, outcome: string): void => {
       if (Result[methodName] === undefined) {
         return;
       }
       Result[methodName].overloads.forEach((overload: any) => {
-        overload.implementation = guard("flutter/android/result-impl", function (
-          this: any,
-          ...args: any[]
-        ) {
-          const id = String(this.hashCode());
-          const origin = pendingResults.get(id);
-          if (origin) {
-            pendingResults.delete(id);
-            const value = args.length > 0 && args[0] !== null ? String(args[0]) : null;
-
-            emit<ResultRecord>("result", {
-              channel: origin.channel,
-              method: origin.method,
-              outcome,
-              value: clamp(value),
-            });
-
-            const s = score(origin.channel + "/" + origin.method);
-            const line = "    ↳ " + outcome + ": " + (clamp(value) ?? "<void>");
-            if (isInteresting(s)) {
-              log.hit(line);
-            } else if (getConfig().verbose) {
-              log.detail(line.trim());
-            }
+        observe("flutter/android/result/" + outcome, overload, (self, args) => {
+          if (self === null || self === undefined) {
+            return;
           }
-          return overload.apply(this, args);
+          const id = String(self.hashCode());
+          const origin = pendingResults.get(id);
+          if (origin === undefined) {
+            return;
+          }
+          pendingResults.delete(id);
+
+          const value = args.length > 0 && args[0] !== null ? String(args[0]) : null;
+
+          emit<ResultRecord>("result", {
+            channel: origin.channel,
+            method: origin.method,
+            outcome,
+            value: clamp(value),
+          });
+
+          const s = score(origin.channel + "/" + origin.method);
+          const line = "↳ " + outcome + ": " + (clamp(value) ?? "<void>");
+          if (isInteresting(s)) {
+            log.hit("    " + line);
+          } else if (getConfig().verbose) {
+            log.detail(line);
+          }
         });
       });
     };
@@ -225,29 +266,30 @@ function trackResult(result: any, channel: string, method: string): void {
  * message, so names can be recovered from live traffic instead.
  */
 function hookMessenger(): void {
+  // FlutterNativeView is the pre-embedding-v2 messenger and is simply absent on
+  // current Flutter; its absence is a version fact, not a failure.
   const candidates = [
     "io.flutter.embedding.engine.dart.DartMessenger",
     "io.flutter.view.FlutterNativeView",
   ];
 
   for (const className of candidates) {
-    safe("flutter/android/messenger/" + className, () => {
-      const Messenger: any = Java.use(className);
+    const Messenger = optionalClass(use, className);
+    if (Messenger === null) {
+      continue;
+    }
 
+    safe("flutter/android/messenger/" + className, () => {
       for (const methodName of ["send", "handleMessageFromDart", "dispatchMessageToQueue"]) {
         if (Messenger[methodName] === undefined) {
           continue;
         }
         Messenger[methodName].overloads.forEach((overload: any) => {
-          overload.implementation = guard("flutter/android/messenger-impl", function (
-            this: any,
-            ...args: any[]
-          ) {
+          observe("flutter/android/messenger", overload, (_self, args) => {
             const name = args.find((a) => typeof a === "string");
             if (typeof name === "string") {
               recordChannel(name, "method", "messenger");
             }
-            return overload.apply(this, args);
           });
         });
       }
@@ -270,44 +312,55 @@ function recordPlugin(name: string, source: string): void {
 }
 
 /**
- * Inventory the registered Flutter plugins.
+ * Watch plugin registration.
  *
- * This is the app's third-party dependency list, recovered at runtime — one of
- * the highest-value things to know before choosing where to look.
+ * The plugin list is the app's third-party dependency inventory, recovered at
+ * runtime — one of the highest-value things to know before choosing where to
+ * look. This installs the hook only; the passive sweep is a separate step.
  */
-function enumeratePlugins(): void {
-  log.section("Flutter Plugins");
+function hookPluginRegistry(): void {
+  const Registry = optionalClass(use, "io.flutter.embedding.engine.FlutterEngineConnectionRegistry");
+  if (Registry === null || Registry.add === undefined) {
+    return;
+  }
 
   safe("flutter/android/plugin-registry", () => {
-    const Registry: any = Java.use("io.flutter.embedding.engine.FlutterEngineConnectionRegistry");
     Registry.add.overloads.forEach((overload: any) => {
-      // The single-plugin overload is the one that names a concrete class; the
-      // Set overload just fans out into it.
-      overload.implementation = guard("flutter/android/plugin-add", function (
-        this: any,
-        ...args: any[]
-      ) {
+      observe("flutter/android/plugin-add", overload, (_self, args) => {
         const plugin = args[0];
         if (plugin !== null && plugin !== undefined && plugin.$className !== undefined) {
           recordPlugin(plugin.$className, "registry");
         }
-        return overload.apply(this, args);
       });
     });
   });
+}
 
-  // Passive sweep: plugins already registered before the hook landed still have
-  // their classes loaded, and Flutter plugin packages follow a strong naming
-  // convention.
-  safe("flutter/android/plugin-scan", () => {
-    Java.enumerateLoadedClasses({
-      onMatch(name: string) {
-        if (name.startsWith("io.flutter.plugins.") && name.endsWith("Plugin")) {
-          recordPlugin(name, "loaded-classes");
-        }
-      },
-      onComplete() {},
+/**
+ * Sweep loaded classes for plugins the registry hook did not see.
+ *
+ * Deliberately not run at spawn: no plugin classes are loaded that early, so it
+ * would always come back empty. Called once the engine is up, where it catches
+ * anything registered before the hook landed — the late-attach case.
+ */
+export function sweepAndroidPlugins(): void {
+  Java.perform(() => {
+    log.section("Flutter Plugins");
+
+    safe("flutter/android/plugin-scan", () => {
+      Java.enumerateLoadedClasses({
+        onMatch(name: string) {
+          if (name.startsWith("io.flutter.plugins.") && name.endsWith("Plugin")) {
+            recordPlugin(name, "loaded-classes");
+          }
+        },
+        onComplete() {},
+      });
     });
+
+    if (seenPlugins.size === 0) {
+      log.detail("no plugins seen yet — they register as the app starts up");
+    }
   });
 }
 
@@ -321,8 +374,7 @@ export function enumerateAndroid(): void {
 
     hookMethodCallHandlers();
     hookMessenger();
-
-    enumeratePlugins();
+    hookPluginRegistry();
 
     log.detail("Hooks installed — exercise the app to populate the model.");
   });

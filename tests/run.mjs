@@ -29,6 +29,7 @@ execFileSync(
     "agent/core/config.ts",
     "agent/core/dedupe.ts",
     "agent/enumerate/flutter/dart.ts",
+    "agent/core/safe.ts",
     "--outDir", out,
     "--module", "ES2022",
     "--target", "ES2022",
@@ -201,6 +202,67 @@ console.log("\ndart — build mode inference");
   check("no signals is unknown, not a guess", unknown.mode === "unknown");
   check("unknown carries no evidence", unknown.evidence.length === 0);
   check("verdicts carry their evidence", profile.evidence.length === 2, profile.evidence.join("; "));
+}
+
+console.log("\nsafe — this-binding and call-through");
+{
+  const { guard, observe } = await import(pathToFileURL(join(out, "agent/core/safe.js")).href);
+
+  // Regression: guard was an arrow function, which does not accept a bound
+  // `this`. Every replaced Java method received `this === undefined`, so
+  // `this.name`, `this.setMethodCallHandler` and `overload.apply(this, ...)`
+  // all failed — and constructors that never ran terminated the target.
+  const wrapped = guard("test/this", function () {
+    return this === undefined ? "LOST" : this.marker;
+  });
+  const receiver = { marker: "kept" };
+  check("guard forwards `this`", wrapped.call(receiver) === "kept", String(wrapped.call(receiver)));
+
+  const passthroughArgs = guard("test/args", function (a, b) {
+    return a + b;
+  });
+  check("guard forwards arguments", passthroughArgs.call(null, 2, 3) === 5);
+
+  const thrower = guard("test/throws", () => {
+    throw new Error("boom");
+  });
+  check("guard contains throws", thrower.call(null) === undefined);
+
+  // observe() must invoke the original no matter what the observer does,
+  // otherwise a failure in instrumentation changes app behaviour.
+  const makeOverload = () => {
+    const calls = [];
+    return {
+      calls,
+      implementation: null,
+      apply(self, args) {
+        calls.push({ self, args });
+        return "original-result";
+      },
+    };
+  };
+
+  const healthy = makeOverload();
+  let observed = null;
+  observe("test/observe", healthy, (self, args) => {
+    observed = { self, args };
+  });
+  const healthyResult = healthy.implementation.call({ id: 7 }, "a", "b");
+  check("observe returns the original's result", healthyResult === "original-result");
+  check("observe forwards `this` to the original", healthy.calls[0].self.id === 7);
+  check("observe forwards args to the original", healthy.calls[0].args.length === 2);
+  check("observe passes `this` to the observer", observed.self.id === 7);
+
+  const broken = makeOverload();
+  observe("test/observe-throws", broken, () => {
+    throw new Error("observer exploded");
+  });
+  const brokenResult = broken.implementation.call({ id: 9 }, "x");
+  check(
+    "a throwing observer still calls the original",
+    brokenResult === "original-result" && broken.calls.length === 1,
+    "this is what stops instrumentation from crashing the target",
+  );
 }
 
 console.log(failures === 0 ? "\nall checks passed\n" : "\n" + failures + " check(s) failed\n");

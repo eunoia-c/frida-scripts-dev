@@ -3,7 +3,7 @@ import ObjC from "frida-objc-bridge";
 
 import { emit } from "../core/emit.js";
 import { log, pad } from "../core/log.js";
-import { safe } from "../core/safe.js";
+import { observe, safe } from "../core/safe.js";
 import type { EngineRecord, ModuleRecord, Platform, TargetRecord } from "../core/types.js";
 import { findDartPayload } from "./modules.js";
 
@@ -17,13 +17,23 @@ export function detectPlatform(): Platform {
   return "unknown";
 }
 
-function androidIdentity(): void {
+/** True once identity has been reported, so the deferred path fires only once. */
+let identityReported = false;
+
+/**
+ * Report app identity, returning false when the context does not exist yet.
+ *
+ * On a spawned process this is the normal case for the first attempt: the agent
+ * runs before the Application object is constructed.
+ */
+function androidIdentity(): boolean {
+  let reported = false;
+
   Java.perform(() => {
     safe("target/android-identity", () => {
       const ActivityThread = Java.use("android.app.ActivityThread");
       const app = ActivityThread.currentApplication();
       if (app === null) {
-        log.warn("No application context yet — identity unavailable.");
         return;
       }
 
@@ -53,6 +63,37 @@ function androidIdentity(): void {
 
       log.info(pad("Package", 14) + ": " + id);
       log.info(pad("Version", 14) + ": " + versionName + " (" + versionCode + ")");
+      reported = true;
+      identityReported = true;
+    });
+  });
+
+  return reported;
+}
+
+/**
+ * Retry identity once the Application exists.
+ *
+ * `Instrumentation.callApplicationOnCreate` is the framework's own entry point
+ * into the app, so by the time it runs the Application object is constructed
+ * and `currentApplication()` answers. Hooking it is deterministic, unlike
+ * waiting a fixed number of milliseconds and hoping.
+ */
+function deferAndroidIdentity(): void {
+  Java.perform(() => {
+    safe("target/defer-identity", () => {
+      const Instrumentation = Java.use("android.app.Instrumentation");
+      if (Instrumentation.callApplicationOnCreate === undefined) {
+        return;
+      }
+
+      Instrumentation.callApplicationOnCreate.overloads.forEach((overload: any) => {
+        observe("target/app-oncreate", overload, () => {
+          if (!identityReported) {
+            androidIdentity();
+          }
+        });
+      });
     });
   });
 }
@@ -92,7 +133,10 @@ function iosIdentity(): void {
 export function reportIdentity(platform: Platform): void {
   log.section("Application Identity");
   if (platform === "android") {
-    androidIdentity();
+    if (!androidIdentity()) {
+      log.detail("application not constructed yet — will report at onCreate");
+      deferAndroidIdentity();
+    }
   } else if (platform === "ios") {
     iosIdentity();
   } else {

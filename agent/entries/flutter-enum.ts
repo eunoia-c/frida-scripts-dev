@@ -5,9 +5,10 @@ import { countOf, elapsed, emit, model } from "../core/emit.js";
 import { log } from "../core/log.js";
 import { safe } from "../core/safe.js";
 import type { RunEndRecord, RunStartRecord } from "../core/types.js";
-import { enumerateAndroid } from "../enumerate/flutter/android.js";
+import { enumerateAndroid, sweepAndroidPlugins } from "../enumerate/flutter/android.js";
 import { enumerateDart } from "../enumerate/flutter/dart.js";
 import { enumerateIOS } from "../enumerate/flutter/ios.js";
+import { whenFlutterLoaded } from "../enumerate/loader.js";
 import { detectPlatform, reportEngine, reportIdentity, reportModules } from "../enumerate/target.js";
 import { profileName } from "../score/index.js";
 
@@ -31,13 +32,8 @@ function run(): void {
 
   reportIdentity(platform);
 
-  const modules = reportModules();
-  const engine = reportEngine(modules);
-
-  // Order matters. Installing the channel hooks is nearly free, while the Dart
-  // scan walks megabytes of snapshot data and takes real time. On a spawned
-  // process every channel registered during that scan would be missed, so the
-  // hooks go in first and the expensive passive work runs behind them.
+  // Channel hooks go in first and unconditionally. They are nearly free, and on
+  // a spawned process anything registered while we are busy elsewhere is gone.
   if (platform === "android") {
     enumerateAndroid();
   } else if (platform === "ios") {
@@ -46,9 +42,20 @@ function run(): void {
     log.fail("Unsupported runtime — no Java or Objective-C bridge available.");
   }
 
-  if (engine === "Flutter") {
-    enumerateDart(modules);
-  }
+  // Module-based work waits for the engine to actually be mapped. Enumerating
+  // at spawn reports "Native" for an app that is plainly Flutter, because the
+  // native libraries load seconds later.
+  whenFlutterLoaded(() => {
+    const modules = reportModules();
+    const engine = reportEngine(modules);
+
+    if (engine === "Flutter") {
+      if (platform === "android") {
+        sweepAndroidPlugins();
+      }
+      enumerateDart(modules);
+    }
+  });
 }
 
 /**
