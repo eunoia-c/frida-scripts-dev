@@ -276,11 +276,44 @@ function readPrintable(
   return String.fromCharCode(...view.subarray(0, end));
 }
 
+/**
+ * Can this module's symbol table be read from disk without crashing?
+ *
+ * `enumerateSymbols()` parses the ELF file rather than memory, so it needs a
+ * path it can open. Android has mapped native libraries directly out of the APK
+ * since `extractNativeLibs=false` became the default, giving modules a
+ * synthetic path like:
+ *
+ *   /data/app/~~hash==/pkg-hash==/base.apk!/lib/arm64-v8a/libapp.so
+ *
+ * `fopen` cannot open that. Frida does not check the result and calls
+ * `fseeko(NULL)`, which segfaults the target — a native fault that no
+ * JS-level try/catch can contain. This check is the only defence.
+ */
+function canReadSymbolTable(module: Module): boolean {
+  const path = module.path;
+  if (typeof path !== "string" || !path.startsWith("/")) {
+    return false;
+  }
+  return !path.includes("!") && !path.includes(".apk");
+}
+
 /** Locate the snapshot sections and their sizes, when the symbols survive. */
 function findSnapshotSections(appModule: Module): SnapshotSection[] {
   const sections: SnapshotSection[] = [];
 
-  const symbols = safe("dart/enumerate-symbols", () => appModule.enumerateSymbols());
+  // Off by default: on Android the common case is an APK-embedded library,
+  // where this crashes the process outright. Exports are resolved from memory
+  // and are always safe; the only thing lost is the section size.
+  const useSymbolTable = getConfig().dartSymbolTable && canReadSymbolTable(appModule);
+
+  if (getConfig().dartSymbolTable && !useSymbolTable) {
+    log.detail("symbol table skipped — " + appModule.name + " is mapped from an archive");
+  }
+
+  const symbols = useSymbolTable
+    ? safe("dart/enumerate-symbols", () => appModule.enumerateSymbols())
+    : undefined;
 
   for (const name of SNAPSHOT_SYMBOLS) {
     const symbol = symbols?.find((s) => s.name === name || s.name === name.replace(/^_/, ""));

@@ -31,6 +31,20 @@ export interface Config {
    * scan walks the snapshot data section and costs time proportional to it.
    */
   dartLibraryScan: boolean;
+  /**
+   * Read the Dart payload's ELF symbol table to get snapshot section sizes.
+   *
+   * Off by default because it is not survivable on Android: modern APKs map
+   * native libraries straight out of the archive, and Frida's symbol reader
+   * calls fopen() on a path that cannot be opened, then dereferences the NULL
+   * it gets back. That is a native segfault, not an exception — it kills the
+   * target and no try/catch can stop it.
+   *
+   * Enable only for a payload extracted to a real file on disk. Exports are
+   * always read from memory and are unaffected; leaving this off costs only
+   * the section sizes.
+   */
+  dartSymbolTable: boolean;
 }
 
 const config: Config = {
@@ -43,6 +57,7 @@ const config: Config = {
   maxDedupeKeys: 8192,
   scoreThreshold: 1,
   dartLibraryScan: true,
+  dartSymbolTable: false,
 };
 
 export function getConfig(): Config {
