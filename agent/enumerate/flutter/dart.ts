@@ -148,20 +148,87 @@ const PATTERNS = {
 /** Cap on recovered library URIs, so a large snapshot cannot stall the agent. */
 const MAX_LIBRARIES = 4000;
 
+/** A match, carrying the end of the mapping it was found in so reads stay inside. */
+interface ScanHit {
+  address: NativePointer;
+  limit: NativePointer;
+}
+
+/**
+ * The readable mappings backing a module.
+ *
+ * A module's `base`/`size` describe its virtual span, which is not the same as
+ * what is mapped: segments are page-aligned with unmapped gaps between them, so
+ * scanning the whole span walks into holes. Frida surfaces that as an access
+ * violation, and it killed the first target this was run against.
+ *
+ * Frida matches ranges holding *at least* the requested protection, so "r--"
+ * covers r-x and rw- too.
+ */
+function readableRanges(module: Module): RangeDetails[] {
+  return safe("dart/ranges", () => module.enumerateRanges("r--")) ?? [];
+}
+
+/**
+ * Scan every readable mapping of a module, stopping at `limit` matches.
+ *
+ * Each range is scanned independently so that one unreadable mapping costs that
+ * range rather than the whole scan.
+ */
+function scanModule(module: Module, pattern: string, limit: number): ScanHit[] {
+  const hits: ScanHit[] = [];
+
+  for (const range of readableRanges(module)) {
+    if (hits.length >= limit) {
+      break;
+    }
+
+    const matches = safe("dart/scan", () => Memory.scanSync(range.base, range.size, pattern)) ?? [];
+    const end = range.base.add(range.size);
+
+    for (const match of matches) {
+      hits.push({ address: match.address, limit: end });
+      if (hits.length >= limit) {
+        break;
+      }
+    }
+  }
+
+  return hits;
+}
+
+/** Scan an explicit address range that is known to be mapped. */
+function scanRange(base: NativePointer, size: number, pattern: string, limit: number): ScanHit[] {
+  const matches = safe("dart/scan-range", () => Memory.scanSync(base, size, pattern)) ?? [];
+  const end = base.add(size);
+  return matches.slice(0, limit).map((m) => ({ address: m.address, limit: end }));
+}
+
+/**
+ * Is [base, base+size) wholly inside one readable mapping?
+ *
+ * A symbol's address and size come from the file's symbol table, which
+ * describes the on-disk layout — not what the loader ended up mapping. Checking
+ * before scanning avoids trusting the symbol table with a raw memory read.
+ */
+function isRangeReadable(base: NativePointer, size: number, ranges: RangeDetails[]): boolean {
+  const end = base.add(size);
+  return ranges.some((range) => {
+    const rangeEnd = range.base.add(range.size);
+    return base.compare(range.base) >= 0 && end.compare(rangeEnd) <= 0;
+  });
+}
+
 function scanFirstString(module: Module, pattern: string, maxLen: number): string | null {
-  const matches = safe("dart/scan", () => Memory.scanSync(module.base, module.size, pattern));
-  const first = matches?.[0];
-  if (first === undefined) {
+  const hit = scanModule(module, pattern, 1)[0];
+  if (hit === undefined) {
     return null;
   }
-  return safe("dart/scan-read", () => first.address.readUtf8String(maxLen)) ?? null;
+  return readPrintable(hit.address, maxLen, hit.limit);
 }
 
 function hasPattern(module: Module, pattern: string): boolean {
-  const matches = safe("dart/has-pattern", () =>
-    Memory.scanSync(module.base, module.size, pattern),
-  );
-  return matches !== undefined && matches.length > 0;
+  return scanModule(module, pattern, 1).length > 0;
 }
 
 /**
@@ -171,8 +238,24 @@ function hasPattern(module: Module, pattern: string): boolean {
  * readUtf8String would run past the end into adjacent data. Reading a bounded
  * window and cutting at the first non-printable byte keeps recovery honest.
  */
-function readPrintable(address: NativePointer, maxLen: number): string | null {
-  const bytes = safe("dart/read-printable", () => address.readByteArray(maxLen));
+function readPrintable(
+  address: NativePointer,
+  maxLen: number,
+  limit?: NativePointer,
+): string | null {
+  // Clamp to the end of the mapping the match came from. A string near the tail
+  // of a range would otherwise read past it into unmapped memory — the same
+  // class of fault that scanning the full module span caused.
+  let length = maxLen;
+  if (limit !== undefined) {
+    const available = limit.sub(address).toInt32();
+    if (available <= 0) {
+      return null;
+    }
+    length = Math.min(maxLen, available);
+  }
+
+  const bytes = safe("dart/read-printable", () => address.readByteArray(length));
   if (bytes === null || bytes === undefined) {
     return null;
   }
@@ -246,37 +329,28 @@ function recoverLibraries(
     (s) => s.name === "_kDartIsolateSnapshotData" && s.size !== null && s.size > 0,
   );
 
-  const scanBase =
-    dataSection !== undefined ? ptr(dataSection.address) : appModule.base;
-  const scanSize = dataSection?.size ?? appModule.size;
+  const ranges = readableRanges(appModule);
+  const useSection =
+    dataSection !== undefined &&
+    dataSection.size !== null &&
+    isRangeReadable(ptr(dataSection.address), dataSection.size, ranges);
+
+  const hits =
+    useSection && dataSection !== undefined && dataSection.size !== null
+      ? scanRange(ptr(dataSection.address), dataSection.size, PATTERNS.packageUri, MAX_LIBRARIES)
+      : scanModule(appModule, PATTERNS.packageUri, MAX_LIBRARIES);
 
   log.detail(
-    "scanning " +
-      (dataSection !== undefined ? "isolate snapshot data" : appModule.name) +
-      " (" +
-      Math.round(scanSize / 1024) +
-      " KiB) for library URIs",
+    "scanned " +
+      (useSection ? "isolate snapshot data" : appModule.name + " mappings") +
+      " · " +
+      hits.length +
+      " candidate(s)",
   );
 
-  const matches = safe("dart/scan-packages", () =>
-    Memory.scanSync(scanBase, scanSize, PATTERNS.packageUri),
-  );
-
-  if (matches === undefined) {
-    return { uris: [], packages: [] };
-  }
-
-  for (const match of matches) {
-    if (uris.length >= MAX_LIBRARIES) {
-      log.detail("library recovery capped at " + MAX_LIBRARIES + " entries");
-      break;
-    }
-
-    const candidate = readPrintable(match.address, 200);
-    if (candidate === null || !isDartLibraryUri(candidate)) {
-      continue;
-    }
-    if (!seen.first(candidate)) {
+  for (const hit of hits) {
+    const candidate = readPrintable(hit.address, 200, hit.limit);
+    if (candidate === null || !isDartLibraryUri(candidate) || !seen.first(candidate)) {
       continue;
     }
 
@@ -285,6 +359,10 @@ function recoverLibraries(
     if (pkg !== null) {
       packages.add(pkg);
     }
+  }
+
+  if (hits.length >= MAX_LIBRARIES) {
+    log.detail("library recovery capped at " + MAX_LIBRARIES + " candidates");
   }
 
   return { uris, packages: Array.from(packages).sort() };
