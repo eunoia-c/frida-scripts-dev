@@ -39,7 +39,10 @@ export interface DartVersion {
 export function parseDartVersion(raw: string): DartVersion {
   const line = raw.split("\n")[0]?.trim() ?? raw.trim();
 
-  const match = /Dart (?:SDK|VM) version:\s*([0-9]+\.[0-9]+\.[0-9]+(?:[-+][\w.]+)?)\s*(?:\(([^)]*)\))?/.exec(
+  // The prefix is optional: a scanned literal carries "Dart SDK version: ",
+  // while Dart_VersionString() returns the bare value. Anchored so that a
+  // version-looking substring buried in unrelated text is not mistaken for one.
+  const match = /^(?:Dart (?:SDK|VM) version:\s*)?([0-9]+\.[0-9]+\.[0-9]+(?:[-+][\w.]+)?)\s*(?:\(([^)]*)\))?/.exec(
     line,
   );
   const arch = /\bon\s+"([^"]+)"/.exec(line);
@@ -140,8 +143,12 @@ const SNAPSHOT_SYMBOLS = [
 const PATTERNS = {
   dartVersion: "44 61 72 74 20 53 44 4b 20 76 65 72 73 69 6f 6e 3a 20", // "Dart SDK version: "
   dartVmVersion: "44 61 72 74 20 56 4d 20 76 65 72 73 69 6f 6e 3a 20", // "Dart VM version: "
-  vmService: "44 61 72 74 20 56 4d 20 73 65 72 76 69 63 65", // "Dart VM service"
-  observatory: "4f 62 73 65 72 76 61 74 6f 72 79", // "Observatory"
+  // Deliberately the full startup message rather than the bare product name.
+  // "Observatory" and "Dart VM service" appear in shared VM strings compiled
+  // into release engines too, so matching those reported a Play Store release
+  // build as "profile" — a false finding, which is worse than no finding.
+  vmService: "76 6d 20 73 65 72 76 69 63 65 20 69 73 20 6c 69 73 74 65 6e 69 6e 67 20 6f 6e", // "vm service is listening on"
+  observatory: "4f 62 73 65 72 76 61 74 6f 72 79 20 6c 69 73 74 65 6e 69 6e 67 20 6f 6e", // "Observatory listening on"
   packageUri: "70 61 63 6b 61 67 65 3a", // "package:"
 };
 
@@ -217,6 +224,29 @@ function isRangeReadable(base: NativePointer, size: number, ranges: RangeDetails
     const rangeEnd = range.base.add(range.size);
     return base.compare(range.base) >= 0 && end.compare(rangeEnd) <= 0;
   });
+}
+
+/**
+ * Ask the engine for its version directly.
+ *
+ * Scanning for a "Dart SDK version: " literal assumes the prefix is embedded,
+ * and on a real target it was not — the scan found nothing. `Dart_VersionString`
+ * is an exported embedder API returning a static string, needs no isolate, and
+ * gives the exact value instead of a guess.
+ */
+function readVersionExport(engine: Module): string | null {
+  const address = safe("dart/version-export", () => engine.findExportByName("Dart_VersionString"));
+  if (address === null || address === undefined) {
+    return null;
+  }
+
+  return (
+    safe("dart/version-call", () => {
+      const fn = new NativeFunction(address, "pointer", []);
+      const result = fn();
+      return result.isNull() ? null : result.readCString(256);
+    }) ?? null
+  );
 }
 
 function scanFirstString(module: Module, pattern: string, maxLen: number): string | null {
@@ -419,6 +449,7 @@ export function enumerateDart(modules: Module[]): void {
   let version: DartVersion | null = null;
   if (engine !== null) {
     const raw =
+      readVersionExport(engine) ??
       scanFirstString(engine, PATTERNS.dartVersion, 256) ??
       scanFirstString(engine, PATTERNS.dartVmVersion, 256);
     if (raw !== null) {

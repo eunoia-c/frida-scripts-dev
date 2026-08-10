@@ -147,8 +147,17 @@ console.log("\ndart — version parsing");
   );
   check("stops at the first line", !trailing.raw.includes("some other"), trailing.raw);
 
+  // Dart_VersionString() returns the value without any prefix.
+  const bare = parseDartVersion('3.5.4 (stable) (Wed Sep 11 2024) on "android_arm64"');
+  check("parses the bare export form", bare.sdk === "3.5.4", bare.sdk);
+  check("parses channel from the bare form", bare.channel === "stable", bare.channel);
+  check("parses arch from the bare form", bare.arch === "android_arm64", bare.arch);
+
   const junk = parseDartVersion("not a version string at all");
   check("returns null on junk rather than throwing", junk.sdk === null);
+
+  const buried = parseDartVersion("some text mentioning 1.2.3 in passing");
+  check("does not match a version buried in prose", buried.sdk === null, String(buried.sdk));
 }
 
 console.log("\ndart — library URI validation");

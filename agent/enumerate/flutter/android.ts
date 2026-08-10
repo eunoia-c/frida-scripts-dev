@@ -25,8 +25,66 @@ const handlerToChannel = new Map<string, string>();
 /** Result object identity -> the call it belongs to, so async results attribute correctly. */
 const pendingResults = new Map<string, { channel: string; method: string }>();
 
+/** Upper bound on in-flight calls awaiting a reply. */
+const MAX_PENDING_RESULTS = 512;
+
 function use(className: string): any {
   return Java.use(className);
+}
+
+/**
+ * Read a Java field by any of several candidate names, as a string.
+ *
+ * Frida renames a field when its name collides with a method or a JS builtin,
+ * exposing it with a leading underscore. `MethodCall.arguments` hits exactly
+ * that, so both spellings have to be tried. Returns null rather than the string
+ * "undefined" when nothing resolves — the distinction matters, because a call
+ * with no payload and a call whose payload we failed to read are different
+ * facts.
+ */
+function readField(target: any, names: string[]): string | null {
+  if (target === null || target === undefined) {
+    return null;
+  }
+  for (const name of names) {
+    try {
+      const field = target[name];
+      if (field === undefined || field === null) {
+        continue;
+      }
+      const value = field.value;
+      if (value !== undefined && value !== null) {
+        return String(value);
+      }
+    } catch {
+      // Not present under this spelling; try the next.
+    }
+  }
+  return null;
+}
+
+/** Cached java.lang.System wrapper for identityHashCode. */
+let SystemClass: any = null;
+
+/**
+ * Stable identity for a Java object.
+ *
+ * `result.hashCode()` is not callable on every wrapper shape — on the real
+ * target it failed with "not a function", which silently disabled return-value
+ * capture entirely. `System.identityHashCode` is a static that accepts any
+ * Object, so it works regardless of what the wrapper exposes, and is stable for
+ * the object's lifetime, which is what correlating an async reply needs.
+ */
+function identityOf(target: any): string | null {
+  if (target === null || target === undefined) {
+    return null;
+  }
+  try {
+    SystemClass ??= Java.use("java.lang.System");
+    return String(SystemClass.identityHashCode(target));
+  } catch {
+    return null;
+  }
 }
 
 function recordChannel(name: string, kind: ChannelKind, via: string): void {
@@ -153,19 +211,14 @@ function instrumentHandler(handlerClass: string, channelName: string): void {
             ? handlerToChannel.get(self.$className)
             : undefined) ?? channelName;
 
-        const method =
-          call !== null && call !== undefined && call.method !== undefined
-            ? String(call.method.value)
-            : "<unknown>";
+        const method = readField(call, ["method"]) ?? "<unknown>";
 
-        let rawArgs: string | null = null;
-        try {
-          if (call !== null && call.arguments !== undefined && call.arguments.value !== null) {
-            rawArgs = String(call.arguments.value);
-          }
-        } catch {
-          rawArgs = null;
-        }
+        // `arguments` collides with the JS arguments object, so Frida exposes
+        // the field as `_arguments` on some wrapper shapes. Reading `.value`
+        // off the wrong one yields JS undefined, which String()ed to the
+        // literal "undefined" and rendered as `method(undefined)` for every
+        // call — the payload was never actually captured.
+        const rawArgs = readField(call, ["_arguments", "arguments"]);
 
         const s = score(channel + "/" + method);
         emit<CallRecord>("call", {
@@ -199,10 +252,20 @@ function instrumentHandler(handlerClass: string, channelName: string): void {
  * hash attributes each reply to the call that created it.
  */
 function trackResult(result: any, channel: string, method: string): void {
-  const key = safe("flutter/android/result-key", () => String(result.hashCode()));
-  if (key === undefined) {
+  const key = identityOf(result);
+  if (key === null) {
     return;
   }
+
+  // A call whose reply never arrives would otherwise pin an entry forever.
+  // Dropping the oldest keeps this bounded inside the target's address space.
+  if (pendingResults.size >= MAX_PENDING_RESULTS) {
+    const oldest = pendingResults.keys().next();
+    if (!oldest.done) {
+      pendingResults.delete(oldest.value);
+    }
+  }
+
   pendingResults.set(key, { channel, method });
 
   const resultClass: string = result.$className;
@@ -222,17 +285,19 @@ function trackResult(result: any, channel: string, method: string): void {
       }
       Result[methodName].overloads.forEach((overload: any) => {
         observe("flutter/android/result/" + outcome, overload, (self, args) => {
-          if (self === null || self === undefined) {
+          const id = identityOf(self);
+          if (id === null) {
             return;
           }
-          const id = String(self.hashCode());
           const origin = pendingResults.get(id);
           if (origin === undefined) {
             return;
           }
           pendingResults.delete(id);
 
-          const value = args.length > 0 && args[0] !== null ? String(args[0]) : null;
+          const returned = args.length > 0 ? args[0] : undefined;
+          const value =
+            returned === null || returned === undefined ? null : String(returned);
 
           emit<ResultRecord>("result", {
             channel: origin.channel,
