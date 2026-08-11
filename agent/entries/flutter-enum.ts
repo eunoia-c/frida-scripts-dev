@@ -51,6 +51,9 @@ function run(): void {
 
     if (engine === "Flutter") {
       if (platform === "android") {
+        // Last retry: if the app's classes were not loadable earlier, they
+        // certainly are by the time the engine has mapped.
+        enumerateAndroid();
         sweepAndroidPlugins();
       }
       enumerateDart(modules);

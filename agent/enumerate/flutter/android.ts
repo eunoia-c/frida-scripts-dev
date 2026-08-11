@@ -113,6 +113,9 @@ function recordChannel(name: string, kind: ChannelKind, via: string): void {
  * enumerator keeps working when a version adds another.
  */
 function hookChannelConstructors(className: string, kind: ChannelKind): void {
+  if (!installed.first("ctor:" + className)) {
+    return;
+  }
   const Channel = optionalClass(use, className);
   if (Channel === null) {
     log.detail(className + " not present on this engine version");
@@ -142,6 +145,9 @@ function hookChannelConstructors(className: string, kind: ChannelKind): void {
  * the hook is installed when setMethodCallHandler hands us an instance.
  */
 function hookMethodCallHandlers(): void {
+  if (!installed.first("set-handler")) {
+    return;
+  }
   const MethodChannel = optionalClass(use, "io.flutter.plugin.common.MethodChannel");
   if (MethodChannel === null) {
     return;
@@ -331,6 +337,9 @@ function trackResult(result: any, channel: string, method: string): void {
  * message, so names can be recovered from live traffic instead.
  */
 function hookMessenger(): void {
+  if (!installed.first("messenger")) {
+    return;
+  }
   // FlutterNativeView is the pre-embedding-v2 messenger and is simply absent on
   // current Flutter; its absence is a version fact, not a failure.
   const candidates = [
@@ -384,6 +393,9 @@ function recordPlugin(name: string, source: string): void {
  * look. This installs the hook only; the passive sweep is a separate step.
  */
 function hookPluginRegistry(): void {
+  if (!installed.first("plugin-registry")) {
+    return;
+  }
   const Registry = optionalClass(use, "io.flutter.embedding.engine.FlutterEngineConnectionRegistry");
   if (Registry === null || Registry.add === undefined) {
     return;
@@ -429,10 +441,74 @@ export function sweepAndroidPlugins(): void {
   });
 }
 
+/** Hook sites already installed, so repeated attempts are idempotent. */
+const installed = new Seen();
+
+/** True once the channel classes resolved, so retries can stop. */
+let channelsHooked = false;
+
+/**
+ * Retry installation once the Application exists.
+ *
+ * At spawn the app's class loader may not be built yet, so Flutter's embedder
+ * classes are genuinely unresolvable — and giving up there produced an empty
+ * channel list for an app that plainly had channels. `callApplicationOnCreate`
+ * is the earliest point at which the app's own classes are reliably loadable.
+ */
+function retryWhenAppReady(): void {
+  if (!installed.first("retry-hook")) {
+    return;
+  }
+
+  safe("flutter/android/retry-hook", () => {
+    const Instrumentation = Java.use("android.app.Instrumentation");
+    if (Instrumentation.callApplicationOnCreate === undefined) {
+      return;
+    }
+    Instrumentation.callApplicationOnCreate.overloads.forEach((overload: any) => {
+      observe("flutter/android/retry", overload, () => {
+        if (!channelsHooked) {
+          enumerateAndroid();
+        }
+      });
+    });
+  });
+}
+
+/**
+ * Install the channel hooks. Safe to call repeatedly.
+ *
+ * Called at spawn, again when the Application is constructed, and again when
+ * the Flutter engine maps — whichever succeeds first wins, and the later calls
+ * are no-ops. An app whose classes load late still gets instrumented.
+ */
 export function enumerateAndroid(): void {
   Java.perform(() => {
-    log.section("Flutter Platform Channels (Android)");
+    const first = installed.first("section-header");
+    if (first) {
+      log.section("Flutter Platform Channels (Android)");
+    }
 
+    const MethodChannel = optionalClass(use, "io.flutter.plugin.common.MethodChannel");
+    if (MethodChannel === null) {
+      if (first) {
+        log.detail("Flutter classes not loaded yet — will retry as the app starts");
+      }
+      retryWhenAppReady();
+      return;
+    }
+
+    channelsHooked = true;
+    installChannelHooks();
+
+    if (!first) {
+      log.detail("Flutter classes resolved on retry — channel hooks installed");
+    }
+  });
+}
+
+function installChannelHooks(): void {
+  Java.perform(() => {
     hookChannelConstructors("io.flutter.plugin.common.MethodChannel", "method");
     hookChannelConstructors("io.flutter.plugin.common.EventChannel", "event");
     hookChannelConstructors("io.flutter.plugin.common.BasicMessageChannel", "message");
