@@ -32,6 +32,52 @@ function use(className: string): any {
   return Java.use(className);
 }
 
+/** Class loaders already searched, to keep the reporting quiet on repeats. */
+const loaderSearched = new Seen();
+
+/**
+ * Resolve a class, searching every class loader if the default cannot see it.
+ *
+ * `Java.use` resolves against one class loader. Apps that split code across
+ * loaders — app bundles, dynamic feature delivery, and most commercial
+ * protectors — keep classes somewhere that loader cannot reach, so `Java.use`
+ * throws ClassNotFoundException for a class that is demonstrably loaded and
+ * visible to `Java.enumerateLoadedClasses`.
+ *
+ * That exact contradiction showed up on a real target: the embedder classes
+ * were "not present" while the plugin sweep listed Flutter classes happily.
+ */
+function resolveClass(className: string): any | null {
+  const direct = optionalClass(use, className);
+  if (direct !== null) {
+    return direct;
+  }
+
+  let found: any = null;
+
+  safe("flutter/android/loader-search", () => {
+    Java.enumerateClassLoaders({
+      onMatch(loader: any) {
+        if (found !== null) {
+          return;
+        }
+        try {
+          loader.loadClass(className);
+          found = Java.ClassFactory.get(loader).use(className);
+          if (loaderSearched.first("loader:" + className)) {
+            log.detail("resolved " + className + " via " + loader.$className);
+          }
+        } catch {
+          // Not visible to this loader; keep looking.
+        }
+      },
+      onComplete() {},
+    });
+  });
+
+  return found;
+}
+
 /**
  * Read a Java field by any of several candidate names, as a string.
  *
@@ -116,7 +162,7 @@ function hookChannelConstructors(className: string, kind: ChannelKind): void {
   if (!installed.first("ctor:" + className)) {
     return;
   }
-  const Channel = optionalClass(use, className);
+  const Channel = resolveClass(className);
   if (Channel === null) {
     log.detail(className + " not present on this engine version");
     return;
@@ -148,7 +194,7 @@ function hookMethodCallHandlers(): void {
   if (!installed.first("set-handler")) {
     return;
   }
-  const MethodChannel = optionalClass(use, "io.flutter.plugin.common.MethodChannel");
+  const MethodChannel = resolveClass("io.flutter.plugin.common.MethodChannel");
   if (MethodChannel === null) {
     return;
   }
@@ -199,7 +245,7 @@ function instrumentHandler(handlerClass: string, channelName: string): void {
     return;
   }
 
-  const Handler = optionalClass(use, handlerClass);
+  const Handler = resolveClass(handlerClass);
   if (Handler === null || Handler.onMethodCall === undefined) {
     return;
   }
@@ -279,7 +325,7 @@ function trackResult(result: any, channel: string, method: string): void {
     return;
   }
 
-  const Result = optionalClass(use, resultClass);
+  const Result = resolveClass(resultClass);
   if (Result === null) {
     return;
   }
@@ -348,7 +394,7 @@ function hookMessenger(): void {
   ];
 
   for (const className of candidates) {
-    const Messenger = optionalClass(use, className);
+    const Messenger = resolveClass(className);
     if (Messenger === null) {
       continue;
     }
@@ -396,7 +442,7 @@ function hookPluginRegistry(): void {
   if (!installed.first("plugin-registry")) {
     return;
   }
-  const Registry = optionalClass(use, "io.flutter.embedding.engine.FlutterEngineConnectionRegistry");
+  const Registry = resolveClass("io.flutter.embedding.engine.FlutterEngineConnectionRegistry");
   if (Registry === null || Registry.add === undefined) {
     return;
   }
@@ -489,7 +535,7 @@ export function enumerateAndroid(): void {
       log.section("Flutter Platform Channels (Android)");
     }
 
-    const MethodChannel = optionalClass(use, "io.flutter.plugin.common.MethodChannel");
+    const MethodChannel = resolveClass("io.flutter.plugin.common.MethodChannel");
     if (MethodChannel === null) {
       if (first) {
         log.detail("Flutter classes not loaded yet — will retry as the app starts");
