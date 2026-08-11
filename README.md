@@ -34,6 +34,7 @@ crosses them; an app you never navigate reports almost nothing.
 | Plugins | registered Flutter plugins — the app's third-party dependency list |
 | Channels | every `MethodChannel` / `EventChannel` / `BasicMessageChannel`, scored |
 | Calls | method names, arguments, and **return values** crossing those channels |
+| Coverage | what the run actually observed, and why it may be incomplete |
 
 Sample output, trimmed:
 
@@ -184,6 +185,56 @@ is informative. Either there is no pinning, or it is in `libflutter.so`'s
 BoringSSL where a channel-level enumerator cannot see it — Flutter ignores the
 system trust store, so this is common. Absence of a tag is a question to answer,
 not an answer.
+
+### A thin result is not a small attack surface
+
+**This is the mistake most likely to end up in a report.**
+
+What the enumerator sees depends entirely on how far the app got. If the app
+exits during startup, it never registers its channels, and the output looks
+exactly like an app that has none:
+
+```
+[*] --- Flutter Plugins ---
+[!] [plugin] io.flutter.plugins.firebase.core.FlutterFirebasePlugin
+
+[*] --- Coverage ---
+[+] Channels      : 0
+[+] Calls         : 0 (0 with replies)
+[+] Plugins       : 1
+[-] no channels observed — the app probably exited before registering any
+    (a device-integrity block does exactly this), or its classes were unreachable
+[-] very few plugins — a Flutter app that finished starting registers many,
+    so startup was probably cut short
+    this is a floor, not a census — absence here is not absence in the app
+```
+
+One plugin and no channels is **not** a finding about the app's design. A
+Flutter app that finishes starting registers many plugins. One means startup was
+cut short.
+
+The `Coverage` section at the end of every run exists for this reason: it states
+what was observed and flags the reasons a run may be incomplete, so nobody has
+to infer it from an empty list.
+
+**Why a run comes back thin, in rough order of likelihood:**
+
+| Cause | How you can tell |
+| --- | --- |
+| The app blocked and exited — root/emulator/debugger check | An error dialog on the device; very few plugins; identity may never print |
+| You never exercised the app | Channels are listed but `Calls: 0`. Registration is not traffic |
+| The app's classes were not reachable | `not resolvable yet` lines. Class lookups search every class loader, but a protector can still hide code |
+| Attached late rather than spawning | Startup registrations already happened. Names recover from live traffic; the startup calls do not |
+| The feature was never opened | A channel registers when its plugin loads, not when the app starts |
+| The surface really is small | Only after the above are ruled out |
+
+**The rule:** absence in the output is a question, never an answer. Before
+writing "the app exposes no X", confirm the app actually reached the code that
+would have exposed it.
+
+The inverse holds too. Every run is a lower bound — a channel that exists but
+was not exercised, a plugin loaded behind a feature flag, and logic living
+entirely in Dart are all invisible here by construction.
 
 ### Known false positives
 

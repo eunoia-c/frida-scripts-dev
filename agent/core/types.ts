@@ -25,6 +25,7 @@ export type RecordType =
   | "call"
   | "result"
   | "error"
+  | "coverage"
   | "run.end";
 
 export interface BaseRecord {
@@ -141,6 +142,24 @@ export interface RunEndRecord extends BaseRecord {
   reason: string;
 }
 
+/**
+ * What this run actually managed to observe.
+ *
+ * Enumeration completeness is a function of how far the app ran, so counts
+ * alone are misleading. The warnings say why a result may be a floor rather
+ * than a census.
+ */
+export interface CoverageRecord extends BaseRecord {
+  type: "coverage";
+  channels: number;
+  calls: number;
+  results: number;
+  plugins: number;
+  errors: number;
+  /** Human-readable reasons this run may be incomplete. */
+  warnings: string[];
+}
+
 export type AgentRecord =
   | RunStartRecord
   | TargetRecord
@@ -153,4 +172,5 @@ export type AgentRecord =
   | CallRecord
   | ResultRecord
   | ErrorRecord
+  | CoverageRecord
   | RunEndRecord;

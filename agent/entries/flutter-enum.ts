@@ -8,9 +8,13 @@ import type { RunEndRecord, RunStartRecord } from "../core/types.js";
 import { enumerateAndroid, sweepAndroidPlugins } from "../enumerate/flutter/android.js";
 import { enumerateDart } from "../enumerate/flutter/dart.js";
 import { enumerateIOS } from "../enumerate/flutter/ios.js";
+import { reportCoverage } from "../enumerate/coverage.js";
 import { whenFlutterLoaded } from "../enumerate/loader.js";
 import { detectPlatform, reportEngine, reportIdentity, reportModules } from "../enumerate/target.js";
 import { profileName } from "../score/index.js";
+
+/** How long to let startup traffic settle before summarising coverage. */
+const COVERAGE_DELAY_MS = 6000;
 
 /**
  * Flutter attack-surface enumerator.
@@ -58,6 +62,13 @@ function run(): void {
       }
       enumerateDart(modules);
     }
+
+    // Startup traffic is still arriving when the engine finishes mapping, so
+    // the coverage note waits for it to settle. It is a summary of what was
+    // seen, not a signal to stop watching — hooks stay installed.
+    setTimeout(() => {
+      safe("entry/coverage", () => reportCoverage({ isFlutter: engine === "Flutter" }));
+    }, COVERAGE_DELAY_MS);
   });
 }
 
