@@ -25,6 +25,7 @@ export type RecordType =
   | "call"
   | "result"
   | "error"
+  | "finding"
   | "coverage"
   | "run.end";
 
@@ -143,6 +144,43 @@ export interface RunEndRecord extends BaseRecord {
 }
 
 /**
+ * How a check came out.
+ *
+ * `manual` and `inconclusive` are first-class on purpose. A checklist that
+ * silently drops what it could not test reads as a clean bill of health, which
+ * is the same failure mode as a thin enumeration passing for a small attack
+ * surface.
+ */
+export type CheckStatus =
+  /** Evidence shows the control is in place. */
+  | "pass"
+  /** Evidence shows it is not. */
+  | "fail"
+  /** Facts gathered, but the verdict is a human judgement. */
+  | "review"
+  /** Cannot be answered at runtime; needs a person or another tool. */
+  | "manual"
+  /** Tried and could not determine. */
+  | "inconclusive";
+
+export type Severity = "info" | "low" | "medium" | "high";
+export type Confidence = "high" | "medium" | "low";
+
+export interface FindingRecord extends BaseRecord {
+  type: "finding";
+  /** MASVS/MSTG identifier, e.g. "MSTG-CODE-2". */
+  id: string;
+  title: string;
+  status: CheckStatus;
+  severity: Severity;
+  confidence: Confidence;
+  /** Concrete observations supporting the status — never empty for pass/fail. */
+  evidence: string[];
+  /** What to do next, especially for manual and review outcomes. */
+  note: string | null;
+}
+
+/**
  * What this run actually managed to observe.
  *
  * Enumeration completeness is a function of how far the app ran, so counts
@@ -172,5 +210,6 @@ export type AgentRecord =
   | CallRecord
   | ResultRecord
   | ErrorRecord
+  | FindingRecord
   | CoverageRecord
   | RunEndRecord;

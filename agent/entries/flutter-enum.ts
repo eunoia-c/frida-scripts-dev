@@ -8,6 +8,8 @@ import type { RunEndRecord, RunStartRecord } from "../core/types.js";
 import { enumerateAndroid, sweepAndroidPlugins } from "../enumerate/flutter/android.js";
 import { enumerateDart } from "../enumerate/flutter/dart.js";
 import { enumerateIOS } from "../enumerate/flutter/ios.js";
+import { auditAndroid } from "../audit/android.js";
+import { auditPlatformHooks } from "../audit/webview.js";
 import { reportCoverage } from "../enumerate/coverage.js";
 import { whenFlutterLoaded } from "../enumerate/loader.js";
 import { detectPlatform, reportEngine, reportIdentity, reportModules } from "../enumerate/target.js";
@@ -40,6 +42,9 @@ function run(): void {
   // a spawned process anything registered while we are busy elsewhere is gone.
   if (platform === "android") {
     enumerateAndroid();
+    // Observation-based MSTG checks: installed alongside the channel hooks so
+    // that WebView settings applied during startup are actually seen.
+    auditPlatformHooks();
   } else if (platform === "ios") {
     enumerateIOS();
   } else {
@@ -52,6 +57,12 @@ function run(): void {
   whenFlutterLoaded(() => {
     const modules = reportModules();
     const engine = reportEngine(modules);
+
+    // Metadata checks need only an Application context, which exists by now.
+    // They are platform checks, not Flutter ones, so they run either way.
+    if (platform === "android") {
+      auditAndroid();
+    }
 
     if (engine === "Flutter") {
       if (platform === "android") {

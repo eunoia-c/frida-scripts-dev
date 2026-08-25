@@ -34,6 +34,7 @@ crosses them; an app you never navigate reports almost nothing.
 | Plugins | registered Flutter plugins — the app's third-party dependency list |
 | Channels | every `MethodChannel` / `EventChannel` / `BasicMessageChannel`, scored |
 | Calls | method names, arguments, and **return values** crossing those channels |
+| MSTG checks | MASVS/MSTG items answerable at runtime, with evidence and an explicit list of what still needs a human |
 | Coverage | what the run actually observed, and why it may be incomplete |
 
 Sample output, trimmed:
@@ -90,6 +91,61 @@ An `ignore` list suppresses engine and common-plugin noise (`flutter/textinput`,
 `webview_flutter`, …) before scoring, so the output stays readable.
 
 Edit the profile to retune — nothing is hardcoded in the scripts.
+
+## MSTG checks
+
+A subset of the MASVS/MSTG checklist runs automatically after enumeration. Two
+sources, both runtime:
+
+**App metadata**, read through `PackageManager` and `ApplicationInfo` — no APK,
+no jadx, no unzip. Because these come from the *resolved* package, they reflect
+the merged manifest, including attributes a library contributed that the app's
+own `AndroidManifest.xml` never mentions.
+
+| check | what is read |
+| --- | --- |
+| `MSTG-CODE-2` | `FLAG_DEBUGGABLE` |
+| `MSTG-STORAGE-8` | `FLAG_ALLOW_BACKUP`, plus `targetSdk` for the Android 12+ rules |
+| `MSTG-NETWORK-1` | `FLAG_USES_CLEARTEXT_TRAFFIC` |
+| `MSTG-PLATFORM-1` | requested permissions, with the notable ones called out |
+| `MSTG-PLATFORM-4` | exported activities/services/receivers/providers and their guarding permission |
+| `MSTG-CODE-1` | signer certificates, SHA-256 |
+
+**Observed behaviour**, from hooks — where runtime beats grep outright:
+
+| check | hooked |
+| --- | --- |
+| `MSTG-PLATFORM-5` | `WebSettings.setJavaScriptEnabled` |
+| `MSTG-PLATFORM-6` | `setAllowFileAccess`, `setAllowFileAccessFromFileURLs`, `setAllowUniversalAccessFromFileURLs`, `setAllowContentAccess` |
+| `MSTG-PLATFORM-7` | `WebView.addJavascriptInterface` |
+| `MSTG-CODE-2` | `WebView.setWebContentsDebuggingEnabled` |
+| `MSTG-STORAGE-3` | `android.util.Log.*`, with entries captured |
+
+> **Why hook instead of grep.** `egrep setJavaScriptEnabled` over decompiled
+> Flutter source matches the WebView plugin's bundled Java in *every* app that
+> depends on it, whether or not the app reaches that code — and it cannot tell
+> you what value was passed. The hook answers what the check is actually
+> asking: was this applied to a WebView the app really created?
+
+### Statuses
+
+| status | meaning |
+| --- | --- |
+| `PASS` | evidence shows the control is in place |
+| `FAIL` | evidence shows it is not |
+| `REVIEW` | facts gathered; the verdict is a judgement (is this permission set minimal?) |
+| `MANUAL` | cannot be answered at runtime at all |
+| `UNKNWN` | tried and could not determine |
+
+`MANUAL` items are printed rather than omitted — `MSTG-ARCH-9`, `STORAGE-9`,
+`STORAGE-11`, `AUTH-1`, `NETWORK-3`, `NETWORK-4`, `PLATFORM-2` — each with the
+manual procedure. **A checklist that silently drops what it could not test
+looks identical to one where everything passed.**
+
+One caveat carried in the output itself: for `MSTG-NETWORK-4`, Flutter pins in
+BoringSSL inside `libflutter.so` and ignores the system trust store, so traffic
+flowing through a proxy with your CA installed does *not* by itself prove there
+is no pinning.
 
 ## Reading the output
 
